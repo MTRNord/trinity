@@ -9,8 +9,9 @@ use std::path::Path;
 use imports::*;
 use sync_request::*;
 
-use matrix_sdk::ruma::{RoomId, UserId};
+use matrix_sdk::ruma::{MilliSecondsSinceUnixEpoch, RoomId, UserId};
 use wasmtime::AsContextMut;
+use wasmtime_wasi::{WasiCtx, WasiCtxBuilder};
 
 #[derive(Default)]
 pub struct ModuleState {
@@ -72,10 +73,25 @@ impl log::Log for ModuleState {
     }
 }
 
-#[derive(Default)]
 pub(crate) struct GuestState {
     imports: Vec<ModuleState>,
     exports: exports::ExportsData,
+    wasi: WasiCtx,
+}
+
+impl Default for GuestState {
+    fn default() -> Self {
+        let wasi = WasiCtxBuilder::new()
+            .inherit_stdio()
+            .inherit_args()
+            .unwrap()
+            .build();
+        GuestState {
+            wasi,
+            imports: vec![],
+            exports: exports::ExportsData::default(),
+        }
+    }
 }
 
 pub(crate) struct Module {
@@ -89,19 +105,25 @@ impl Module {
         self.name.as_str()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn handle(
         &self,
         store: impl AsContextMut<Data = GuestState>,
         content: &str,
         sender: &UserId,
+        sender_display_name: &str,
         room: &RoomId,
+        timestamp: MilliSecondsSinceUnixEpoch,
+        event_id: &str,
     ) -> anyhow::Result<Vec<exports::Message>> {
         let msgs = self.exports.on_msg(
             store,
             content,
             sender.as_str(),
-            "author name NYI",
+            sender_display_name,
             room.as_str(),
+            u64::from(timestamp.get()),
+            event_id,
         )?;
         Ok(msgs)
     }
@@ -156,6 +178,7 @@ impl WasmModules {
             store.data_mut().imports.push(module_state);
 
             let mut linker = wasmtime::Linker::<GuestState>::new(&engine);
+            wasmtime_wasi::add_to_linker(&mut linker, |state: &mut GuestState| &mut state.wasi)?;
 
             imports::add_to_linker(&mut linker, move |s| &mut s.imports[entry])?;
             log::add_to_linker(&mut linker, move |s| &mut s.imports[entry])?;
@@ -168,6 +191,10 @@ impl WasmModules {
             let module = wasmtime::Module::from_file(&engine, &module_path)?;
 
             tracing::debug!("instantiating wasm module: {name}...");
+            linker
+                .get_default(&mut store, "")?
+                .typed::<(), (), _>(&store)?
+                .call(&mut store, ())?;
             let (exports, instance) =
                 exports::Exports::instantiate(&mut store, &module, &mut linker, |s| {
                     &mut s.exports

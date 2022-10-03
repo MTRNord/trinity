@@ -15,6 +15,8 @@ impl exports::Exports for Exports {
         author_id: String,
         _author_name: String,
         _room: String,
+        _timestamp: u64,
+        _event_id: String,
     ) -> Vec<exports::Message> {
         if !content.starts_with("!uuid") {
             return vec![];
@@ -28,7 +30,9 @@ impl exports::Exports for Exports {
 
         vec![exports::Message {
             content,
+            formatted_content: exports::OptionalString::None,
             to: author_id,
+            pong: exports::OptionalPong::None,
         }]
     }
 }

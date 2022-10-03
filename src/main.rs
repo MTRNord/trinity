@@ -5,9 +5,12 @@ use matrix_sdk::{
     config::SyncSettings,
     event_handler::Ctx,
     room::Room,
-    ruma::events::room::{
-        member::StrippedRoomMemberEvent,
-        message::{MessageType, RoomMessageEventContent, SyncRoomMessageEvent},
+    ruma::{
+        events::room::{
+            member::StrippedRoomMemberEvent,
+            message::{MessageType, SyncRoomMessageEvent},
+        },
+        exports::serde_json,
     },
     Client,
 };
@@ -140,6 +143,14 @@ async fn on_message(
         let ctx = ctx.inner.clone();
         let room_id = room.room_id().to_owned();
 
+        let displayname: String = room
+            .get_member(ev.sender())
+            .await?
+            .unwrap()
+            .display_name()
+            .unwrap_or("Missing user")
+            .to_owned();
+
         let messages = tokio::task::spawn_blocking(move || {
             let mut ctx = futures::executor::block_on(ctx.lock());
 
@@ -149,12 +160,87 @@ async fn on_message(
             for module in modules {
                 tracing::trace!("trying to handle message with {}...", module.name());
 
-                match module.handle(&mut *store, &content, ev.sender(), &room_id) {
+                match module.handle(
+                    &mut *store,
+                    &content,
+                    ev.sender(),
+                    &displayname,
+                    &room_id,
+                    ev.origin_server_ts(),
+                    ev.event_id().as_str(),
+                ) {
                     Ok(msgs) => {
                         let stop = !msgs.is_empty();
 
                         for msg in msgs {
-                            let text = RoomMessageEventContent::text_plain(msg.content);
+                            let text = if let wasm::exports::OptionalString::Some(formatted_body) =
+                                msg.formatted_content
+                            {
+                                if let wasm::exports::OptionalPong::Some(pong) = msg.pong {
+                                    serde_json::json!({
+                                        "msgtype": "m.notice",
+                                        "format": "org.matrix.custom.html",
+                                        "body": msg.content,
+                                        "formatted_body": formatted_body,
+                                        "m.relates_to": {
+                                            "m.in_reply_to": {
+                                                "event_id": ev.event_id().as_str(),
+                                            },
+                                            "rel_type": "xyz.maubot.pong",
+                                            "event_id": ev.event_id().as_str(),
+                                            "from": ev.sender().server_name().to_string(),
+                                            "ms": pong
+                                        },
+                                        "pong": {
+                                            "from": ev.sender().server_name().to_string(),
+                                            "ms": pong,
+                                            "ping": ev.event_id().as_str(),
+                                        }
+                                    })
+                                } else {
+                                    serde_json::json!({
+                                        "msgtype": "m.notice",
+                                        "format": "org.matrix.custom.html",
+                                        "body": msg.content,
+                                        "formatted_body": formatted_body,
+                                        "m.relates_to": {
+                                            "m.in_reply_to": {
+                                                "event_id": ev.event_id().as_str(),
+                                            }
+                                        }
+                                    })
+                                }
+                            } else if let wasm::exports::OptionalPong::Some(pong) = msg.pong {
+                                serde_json::json!({
+                                    "msgtype": "m.notice",
+                                    "body": msg.content,
+                                    "m.relates_to": {
+                                        "m.in_reply_to": {
+                                            "event_id": ev.event_id().as_str(),
+                                        },
+                                        "rel_type": "xyz.maubot.pong",
+                                        "event_id": ev.event_id().as_str(),
+                                        "from": ev.sender().server_name().to_string(),
+                                        "ms": pong
+                                    },
+                                    "pong": {
+                                        "from": ev.sender().server_name().to_string(),
+                                        "ms": pong,
+                                        "ping": ev.event_id().as_str(),
+                                    }
+                                })
+                            } else {
+                                serde_json::json!({
+                                    "msgtype": "m.notice",
+                                    "body": msg.content,
+                                    "m.relates_to": {
+                                        "m.in_reply_to": {
+                                            "event_id": ev.event_id().as_str(),
+                                        }
+                                    },
+                                })
+                            };
+
                             // TODO take msg.to into consideration, don't always answer the whole room
                             outgoing_messages.push(text);
                         }
@@ -177,7 +263,7 @@ async fn on_message(
         .await?;
 
         for msg in messages {
-            room.send(msg, None).await?;
+            room.send_raw(msg, "m.room.message", None).await?;
         }
     }
 
@@ -259,10 +345,9 @@ async fn real_main() -> anyhow::Result<()> {
     client.sync_once(SyncSettings::default()).await.unwrap();
 
     tracing::debug!("setting up app...");
-    let app_ctx = tokio::task::spawn_blocking(|| {
-        AppCtx::new("./modules/target/wasm32-unknown-unknown/release/".into())
-    })
-    .await??;
+    let app_ctx =
+        tokio::task::spawn_blocking(|| AppCtx::new("./modules/target/wasm32-wasi/release/".into()))
+            .await??;
     let app = App::new(app_ctx);
 
     let _watcher_guard = watcher(app.inner.clone()).await?;

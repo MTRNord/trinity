@@ -1,8 +1,21 @@
+variant optional-pong {
+    none,
+    some(u64)
+}
+
+
+variant optional-string {
+    none,
+    some(string)
+}
+
 record message {
     content: string,
-    to: string
+    formatted-content: optional-string,
+    to: string,
+    pong: optional-pong
 }
 
 init: func()
 help: func() -> string
-on-msg: func(content: string, author-id: string, author-name: string, room: string) -> list<message>
+on-msg: func(content: string, author-id: string, author-name: string, room: string, timestamp: u64, event-id: string) -> list<message>
