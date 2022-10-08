@@ -6,6 +6,7 @@ members = [
   "./wit-log",
   "./wit-sync-request",
   "./ping",
+  "./echo",
 ]
 
 [workspace.dependencies]
