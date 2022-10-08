@@ -9,6 +9,12 @@ pub struct WitLog {
     max_level: log::LevelFilter,
 }
 
+impl Default for WitLog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WitLog {
     pub fn new() -> Self {
         Self {

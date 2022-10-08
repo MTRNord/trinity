@@ -2,7 +2,6 @@ wit_bindgen_guest_rust::import!("../../wit/imports.wit");
 wit_bindgen_guest_rust::export!("../../wit/exports.wit");
 
 use std::time::SystemTime;
-use wit_log;
 
 struct Exports;
 
@@ -32,7 +31,7 @@ fn pretty(timestamp: u64) -> String {
 
 impl exports::Exports for Exports {
     fn init() {
-        let _ = log::set_boxed_logger(Box::new(crate::wit_log::WitLog::new()));
+        let _ = log::set_boxed_logger(Box::new(wit_log::WitLog::new()));
         log::set_max_level(log::LevelFilter::Trace);
         log::trace!("Called the init() method \\o/");
     }
@@ -53,41 +52,55 @@ impl exports::Exports for Exports {
             return vec![];
         }
 
-        let now = SystemTime::now()
+        let since_the_epoch = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+            .expect("Time went backwards");
+        match u64::try_from(since_the_epoch.subsec_nanos()) {
+            Ok(subsec_nanos) => {
+                let now = since_the_epoch.as_secs() * 1000 + subsec_nanos / 1_000_000;
+                let diff = now.checked_sub(timestamp);
+                match diff {
+                    Some(diff) => {
+                        log::info!("{}, {}, {}", now, timestamp, diff);
+                        let pretty_diff = pretty(diff);
+                        let content_without_command = content.trim_start_matches("!ping").trim();
+                        let message = if content_without_command.is_empty() {
+                            format!("{}: Pong! (ping took {} to arrive)", author_id, pretty_diff)
+                        } else {
+                            format!(
+                                "{}: Pong! (ping \"{}\" took {} to arrive)",
+                                author_id, content_without_command, pretty_diff
+                            )
+                        };
+                        let message_formatted = if content_without_command.is_empty() {
+                            format!(
+                                "<a href=\"https://matrix.to/#/{}\">{}</a>: Pong! (<a href=\"https://matrix.to/#/{}/{}\">ping</a> took {} to arrive)",
+                                author_id, author_name,room,event_id, pretty_diff
+                            )
+                        } else {
+                            format!(
+                                "<a href=\"https://matrix.to/#/{}\">{}</a>: Pong! (<a href=\"https://matrix.to/#/{}/{}\">ping</a> \"{}\" took {} to arrive)",
+                                author_id, author_name,room,event_id,content_without_command, pretty_diff
+                            )
+                        };
 
-        let diff = now - timestamp;
-        log::info!("{}, {}, {}", now, timestamp, diff);
-        let pretty_diff = pretty(diff);
-        let content_without_command = content.trim_start_matches("!ping").trim();
-        let message = if content_without_command.is_empty() {
-            format!("{}: Pong! (ping took {} to arrive)", author_id, pretty_diff)
-        } else {
-            format!(
-                "{}: Pong! (ping \"{}\" took {} to arrive)",
-                author_id, content_without_command, pretty_diff
-            )
-        };
-        let message_formatted = if content_without_command.is_empty() {
-            format!(
-                "<a href=\"https://matrix.to/#/{}\">{}</a>: Pong! (<a href=\"https://matrix.to/#/{}/{}\">ping</a> took {} to arrive)",
-                author_id, author_name,room,event_id, pretty_diff
-            )
-        } else {
-            format!(
-                "<a href=\"https://matrix.to/#/{}\">{}</a>: Pong! (<a href=\"https://matrix.to/#/{}/{}\">ping</a> \"{}\" took {} to arrive)",
-                author_id, author_name,room,event_id,content_without_command, pretty_diff
-            )
-        };
+                        let content = message;
+                        vec![exports::Message {
+                            content,
+                            formatted_content: exports::OptionalString::Some(message_formatted),
+                            to: author_id,
+                            pong: exports::OptionalPong::Some(diff),
+                        }]
+                    }
+                    None => {
+                        vec![]
+                    }
+                }
+            }
 
-        let content = message;
-        vec![exports::Message {
-            content,
-            formatted_content: exports::OptionalString::Some(message_formatted),
-            to: author_id,
-            pong: exports::OptionalPong::Some(diff),
-        }]
+            Err(_) => {
+                vec![]
+            }
+        }
     }
 }
